@@ -166,12 +166,17 @@ label.chk input:checked + span{color:var(--ink-2)}
 .mark{
   width:34px;min-height:var(--tap);display:grid;place-items:center;gap:1px;
   border:1px solid var(--rule);border-radius:3px;background:var(--paper);
-  font:600 .64rem/1 var(--mono);color:var(--ink-2);
+  font:600 .64rem/1 var(--mono);color:var(--ink-2);touch-action:manipulation;
 }
-.mark small{font-size:.54rem;opacity:.75;font-weight:400}
+.mark small{font-size:.6rem;opacity:.75;font-weight:400;min-height:9px;line-height:1}
 .mark[data-on="1"]{background:var(--green-soft);border-color:var(--green);color:var(--green)}
 .mark.attempt small{opacity:1;font-weight:600;color:var(--blue)}
-.mark.attempt.undoable small{text-decoration:underline;text-decoration-style:dotted}
+/* The dot only appears once something is set, and is its own tap target
+   (bigger than it looks — see .mark small.dot below) so it can open the
+   detail sheet without also triggering the button's own toggle/increment. */
+.mark small.dot{color:var(--mag);cursor:pointer;font-size:.85rem;
+  position:relative;padding:6px;margin:-6px}
+.mark[data-on="1"] small.dot{color:var(--green)}
 .legend{display:flex;gap:4px;justify-content:flex-end;margin-bottom:6px}
 .grp.gone{opacity:.55}
 .item.gone{opacity:.55;text-decoration:line-through;text-decoration-color:var(--rule)}
@@ -238,6 +243,33 @@ textarea{min-height:110px;resize:vertical;line-height:1.5}
   background:var(--ink);color:var(--paper);padding:11px 18px;border-radius:3px;
   font:600 .78rem var(--mono);box-shadow:var(--shadow);max-width:90vw;text-align:center;
 }
+/* Bottom-sheet popups for mark and attempt detail. Appended to <body>, not
+   #view, so a routeCard() re-render elsewhere doesn't wipe them mid-use. */
+.sheet-backdrop{
+  position:fixed;inset:0;z-index:95;background:rgba(22,32,43,.5);
+  display:flex;align-items:flex-end;justify-content:center;
+}
+.sheet{
+  width:100%;max-width:480px;background:var(--card);color:var(--ink);
+  border-radius:14px 14px 0 0;padding:20px 18px calc(18px + env(safe-area-inset-bottom));
+  box-shadow:0 -6px 28px rgba(0,0,0,.28);max-height:82vh;overflow-y:auto;
+}
+.sheet h3{margin:0 0 3px;font:600 1.05rem/1.3 var(--sans)}
+.sheet .sub{margin:0 0 14px;color:var(--ink-2);font-size:.86rem;line-height:1.4}
+.sheet .status{
+  background:var(--paper);border:1px solid var(--rule);border-radius:3px;
+  padding:10px 12px;margin-bottom:14px;font-size:.9rem;
+}
+.sheet .status b{display:block;font:600 .66rem var(--mono);letter-spacing:.06em;
+  text-transform:uppercase;color:var(--ink-2);margin-bottom:2px}
+.stepper{display:flex;align-items:center;justify-content:center;gap:18px;margin:6px 0 16px}
+.stepper button{
+  width:46px;height:46px;border-radius:50%;border:1px solid var(--rule);
+  background:var(--paper);font:600 1.4rem/1 var(--mono);color:var(--ink);
+}
+.stepper button:disabled{opacity:.35}
+.stepper .count{font:700 1.7rem/1 var(--mono);min-width:44px;text-align:center}
+.sheet .hist{margin-top:2px}
 .rcard{border-left:4px solid var(--blue);padding-bottom:6px}
 .rcard > h3{color:var(--blue)}
 .rcard .aim{display:flex;gap:10px;align-items:baseline;margin:0 0 8px}
@@ -368,6 +400,114 @@ function undoLastCardAttempt(s, itemId){
   save(); queueSync();
   return true;
 }
+/* Removes one specific attempt, from any day — used by the detail sheet,
+   where the person can see exactly what they're deleting before they do it.
+   The quick gestures above stay same-day-only for safety; this one trusts a
+   deliberate tap on a named, dated row instead. */
+function removeCardAttempt(s, itemId, attemptId){
+  const a = ((s.cardAttempts || {})[itemId] || []).find(x => x.id === attemptId && !x.del);
+  if(!a) return false;
+  a.del = 1; a.u = Date.now();
+  save(); queueSync();
+  return true;
+}
+
+/* Double-tap detection for the Attempt button. The single-tap action is
+   deliberately delayed rather than fired immediately and then undone if a
+   second tap follows — firing it early would trip the once-a-day flight
+   auto-log on a tap that was only ever meant as "undo". */
+let attemptTapTimers = {};
+function handleAttemptTap(s, itemId){
+  if(attemptTapTimers[itemId]){
+    clearTimeout(attemptTapTimers[itemId]);
+    delete attemptTapTimers[itemId];
+    if(undoLastCardAttempt(s, itemId)) routeCard();
+    return;
+  }
+  attemptTapTimers[itemId] = setTimeout(() => {
+    delete attemptTapTimers[itemId];
+    addCardAttempt(s, itemId);
+    routeCard();
+  }, 320);
+}
+
+/* ---------------------------------------------------------------- sheets
+   Small bottom-sheet popups for the detail a compact button can't show:
+   who marked something and when, and — the point of this — a clear way to
+   delete it. Appended to <body> rather than into #view, so they survive a
+   routeCard() re-render triggered by something else while they're open. */
+function closeSheet(){
+  const el = document.querySelector(".sheet-backdrop");
+  if(el) el.remove();
+}
+function openSheet(bodyHtml){
+  closeSheet();
+  const backdrop = document.createElement("div");
+  backdrop.className = "sheet-backdrop";
+  backdrop.innerHTML = `<div class="sheet">${bodyHtml}</div>`;
+  backdrop.onclick = e => { if(e.target === backdrop) closeSheet(); };
+  document.body.appendChild(backdrop);
+  return backdrop;
+}
+
+function openMarkSheet(s, itemId, kind){
+  const m = s.marks[itemId] || {};
+  const cur = on(m, kind);
+  if(!cur) return;
+  const label = { brief:"Briefed", taught:"Taught", sat:"Satisfactory" }[kind];
+  const item = CARD.flatMap(g => g.items).find(i => i.id === itemId);
+  const backdrop = openSheet(`
+    <h3>${esc(label)}</h3>
+    <p class="sub">${esc(item ? item.t : "")}</p>
+    <div class="status"><b>Marked</b>${fmt(cur.d)}${cur.by ? ` \u00b7 ${esc(cur.by)}` : ""}</div>
+    <button class="btn ghost" id="sheetdel" style="color:var(--mag);border-color:var(--mag)">
+      Delete this mark</button>
+    <div style="height:8px"></div><button class="btn ghost" id="sheetclose">Close</button>`);
+  backdrop.querySelector("#sheetclose").onclick = closeSheet;
+  backdrop.querySelector("#sheetdel").onclick = () => {
+    m[kind] = { del:1, u:Date.now() };
+    save(); queueSync();
+    closeSheet(); routeCard();
+  };
+}
+
+function openAttemptSheet(s, itemId){
+  const item = CARD.flatMap(g => g.items).find(i => i.id === itemId);
+  const draw = () => {
+    const list = cardAttemptsFor(s, itemId).slice().sort((a,b) => b.u - a.u);
+    const backdrop = openSheet(`
+      <h3>Attempts</h3>
+      <p class="sub">${esc(item ? item.t : "")}</p>
+      <div class="stepper">
+        <button id="stepdown" aria-label="Remove the most recent attempt" ${list.length?"":"disabled"}>\u2212</button>
+        <span class="count">${list.length}</span>
+        <button id="stepup" aria-label="Add one attempt">+</button>
+      </div>
+      ${list.length ? `<div class="hist">${list.map(a => `
+        <div class="item" style="border:0;border-bottom:1px solid var(--rule-2);padding:8px 0">
+          <div class="t"><span class="mono">${fmt(a.d)}</span>${a.by ? ` <em>${esc(a.by)}</em>` : ""}</div>
+          <button class="iconbtn" data-delatt="${a.id}" aria-label="Remove this attempt">&#215;</button>
+        </div>`).join("")}</div>` : `<p class="muted small">No attempts logged.</p>`}
+      <div style="height:8px"></div><button class="btn ghost" id="sheetclose">Close</button>`);
+    backdrop.querySelector("#sheetclose").onclick = closeSheet;
+    backdrop.querySelector("#stepup").onclick = () => { addCardAttempt(s, itemId); draw(); routeCard(); };
+    const down = backdrop.querySelector("#stepdown");
+    if(!down.disabled) down.onclick = () => {
+      const latest = list[0];
+      if(latest.d !== today() &&
+         !confirm(`Remove the attempt logged on ${fmt(latest.d)}? That's from a previous session.`)) return;
+      removeCardAttempt(s, itemId, latest.id); draw(); routeCard();
+    };
+    backdrop.querySelectorAll("[data-delatt]").forEach(b => b.onclick = () => {
+      const a = list.find(x => x.id === b.dataset.delatt);
+      if(a.d !== today() &&
+         !confirm(`Remove the attempt logged on ${fmt(a.d)}? That's from a previous session.`)) return;
+      removeCardAttempt(s, itemId, a.id); draw(); routeCard();
+    });
+  };
+  draw();
+}
+
 /* ------------------------------------------------------------- flights log
    A simple tally of launches, kept per student as append-only events like
    the card attempts above — same reasoning: two instructors adding entries
@@ -680,7 +820,7 @@ function routeCard(){
   h += flightsOpen ? renderFlights(s) : "";
   h += aiOpen ? renderAiPanel(s) : "";
   h += cardEditing
-    ? `<div class="editbar"><span>Editing the card \\u2014 remove lines or whole
+    ? `<div class="editbar"><span>Editing the card \u2014 remove lines or whole
         lessons your club does not use</span>
         <button class="btn sm" id="cardoff">Done</button></div>`
     : `<p class="small muted">Tap <span class="mono">B</span> briefed, <span class="mono">T</span> taught,
@@ -691,30 +831,38 @@ function routeCard(){
     const gHidden = isHidden(g.id);
     h += `<div class="grp${gHidden?" gone":""}"><h3>${esc(g.title)}
       ${cardEditing ? `<button class="rowdel" data-delgrp="${g.id}"
-          aria-label="${gHidden?"Restore lesson":"Remove lesson"}">${gHidden?"\\u21a9":"\\u2715"}</button>` : ""}
+          aria-label="${gHidden?"Restore lesson":"Remove lesson"}">${gHidden?"\u21a9":"\u2715"}</button>` : ""}
       </h3>`;
     if(!gHidden || cardEditing) h += `<div class="legend"><span>B</span><span>T</span><span>A</span><span>S</span></div>`;
     if(!gHidden) g.items.forEach(it => {
       const iHidden = isHidden(it.id);
       const m = s.marks[it.id] || {};
       const attempts = cardAttemptsFor(s, it.id);
-      const undoable = attempts.some(a => a.d === today());
       h += `<div class="item${iHidden?" gone":""}">
         <div class="t">${esc(it.t)}${it.who?` <em>${esc(it.who)}</em>`:""}
           ${it.kind==="theory"?' <em>theory</em>':""}</div>
         ${cardEditing
           ? `<button class="rowdel" data-delitem="${it.id}"
-               aria-label="${iHidden?"Restore line":"Remove line"}">${iHidden?"\\u21a9":"\\u2715"}</button>`
+               aria-label="${iHidden?"Restore line":"Remove line"}">${iHidden?"\u21a9":"\u2715"}</button>`
           : `<div class="marks">
-              ${["brief","taught"].map((k,i)=>`
-                <button class="mark" data-mark="${it.id}" data-k="${k}" data-on="${on(m,k)?1:0}"
-                  aria-label="${["Briefed","Taught"][i]}">
-                  ${"BT"[i]}<small>${on(m,k)?fmt(on(m,k).d):""}</small></button>`).join("")}
-              <button class="mark attempt${undoable?" undoable":""}" data-attempt="${it.id}"
-                aria-label="Log an attempt${undoable?", or tap the number to remove today's last one":""}">
-                A<small>${attempts.length ? attempts.length : ""}</small></button>
-              <button class="mark" data-mark="${it.id}" data-k="sat" data-on="${on(m,"sat")?1:0}"
-                aria-label="Satisfactory">S<small>${on(m,"sat")?fmt(on(m,"sat").d):""}</small></button>
+              ${["brief","taught"].map((k,i)=>{
+                const isOn = !!on(m,k), label = ["Briefed","Taught"][i];
+                return `<button class="mark" data-mark="${it.id}" data-k="${k}" data-on="${isOn?1:0}"
+                  aria-label="${label}${isOn?" \u2014 marked; tap the dot for details or to delete":""}">
+                  ${"BT"[i]}<small${isOn?` class="dot" data-markinfo="${it.id}" data-k="${k}"`:""}
+                    >${isOn?"\u25cf":""}</small></button>`;
+              }).join("")}
+              <button class="mark attempt" data-attempt="${it.id}"
+                aria-label="Log an attempt. Double-tap to undo the last one from today.">
+                A<small${attempts.length?` class="dot" data-attinfo="${it.id}"`:""}
+                  >${attempts.length || ""}</small></button>
+              ${(() => {
+                const isOn = !!on(m,"sat");
+                return `<button class="mark" data-mark="${it.id}" data-k="sat" data-on="${isOn?1:0}"
+                  aria-label="Satisfactory${isOn?" \u2014 marked; tap the dot for details or to delete":""}">
+                  S<small${isOn?` class="dot" data-markinfo="${it.id}" data-k="sat"`:""}
+                    >${isOn?"\u25cf":""}</small></button>`;
+              })()}
              </div>`}
         </div>`;
     });
@@ -763,26 +911,35 @@ function routeCard(){
     const m = s.marks[b.dataset.mark] = s.marks[b.dataset.mark] || {};
     const k = b.dataset.k;
     /* Clearing a mark leaves a tombstone rather than deleting the key, so the
-       clearing travels to the other instructors instead of being overwritten. */
+       clearing travels to the other instructors instead of being overwritten.
+       The main button keeps this instant tap-to-toggle for speed; the dot
+       that appears once it's set opens the fuller sheet below as a second,
+       more deliberate way to see what's there and delete it. */
     const settingOn = !on(m, k);
     m[k] = settingOn ? { d:today(), by:S.instructor || "", u:Date.now() }
                      : { del:1, u:Date.now() };
     save(); queueSync();
     if(settingOn) noteTrainingHappened(s);
-    b.dataset.on = on(m,k) ? 1 : 0;
-    b.querySelector("small").textContent = on(m,k) ? fmt(on(m,k).d) : "";
+    const isOn = !!on(m, k);
+    b.dataset.on = isOn ? 1 : 0;
+    const dot = b.querySelector("small");
+    dot.textContent = isOn ? "\u25cf" : "";
+    dot.classList.toggle("dot", isOn);
+    if(isOn){ dot.dataset.markinfo = b.dataset.mark; dot.dataset.k = k; wireMarkDot(dot, s); }
+    else { delete dot.dataset.markinfo; delete dot.dataset.k; }
   });
-  view.querySelectorAll("[data-attempt]").forEach(b => b.onclick = e => {
-    const id = b.dataset.attempt;
-    /* The count itself is the undo target, so a mis-tap can be corrected
-       without a separate control competing for the same small button. */
-    if(e.target.tagName === "SMALL" && b.classList.contains("undoable")){
-      if(undoLastCardAttempt(s, id)) routeCard();
-      return;
-    }
-    addCardAttempt(s, id);
-    routeCard();
+  view.querySelectorAll("[data-markinfo]").forEach(el => wireMarkDot(el, s));
+  view.querySelectorAll("[data-attinfo]").forEach(el => el.onclick = e => {
+    e.stopPropagation();
+    openAttemptSheet(s, el.dataset.attinfo);
   });
+  view.querySelectorAll("[data-attempt]").forEach(b => b.onclick = () => handleAttemptTap(s, b.dataset.attempt));
+}
+function wireMarkDot(dot, s){
+  dot.onclick = e => {
+    e.stopPropagation();
+    if(dot.dataset.markinfo) openMarkSheet(s, dot.dataset.markinfo, dot.dataset.k);
+  };
 }
 const countAll = () => visibleCard().reduce((n,g)=>n+g.items.length,0);
 const countSat = s => {
@@ -1685,6 +1842,7 @@ document.getElementById("theme").onclick = () => {
 
 /* ---------------------------------------------------------------- router */
 function router(){
+  closeSheet();
   const parts = (location.hash.replace(/^#\/?/, "") || "card").split("/");
   tabsEl.hidden = true; refEl.hidden = true; backEl.hidden = true;
   if(parts[0] !== "l"){ editing = false; document.body.classList.remove("editing"); }
