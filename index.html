@@ -120,10 +120,10 @@ nav.tabs button[aria-current="true"]{color:var(--mag);border-bottom-color:var(--
   text-transform:uppercase;color:var(--ink-2);
   padding-bottom:8px;border-bottom:1px solid var(--rule-2);
 }
-.block p{margin:0 0 .7em}
+.block p{margin:0 0 .7em;white-space:pre-wrap}
 .block p:last-child{margin-bottom:0}
 ul.pts{list-style:none;margin:0;padding:0}
-ul.pts li{position:relative;padding:0 0 .5em 1.1em;margin:0}
+ul.pts li{position:relative;padding:0 0 .5em 1.1em;margin:0;white-space:pre-wrap}
 ul.pts li::before{content:"";position:absolute;left:0;top:.62em;
   width:5px;height:5px;background:var(--mag);border-radius:50%}
 
@@ -1071,6 +1071,7 @@ function openEditor(el, l, tab){
   const box = document.createElement("div");
   box.innerHTML = `
     <textarea id="etext" style="min-height:150px">${esc(edited(point))}</textarea>
+    <p class="small muted" style="margin:6px 0 0">Return starts a new line.</p>
     <div style="display:flex;gap:8px;margin-top:8px">
       <button class="btn sm" id="esave">Save</button>
       <button class="btn ghost sm" id="ecancel">Cancel</button>
