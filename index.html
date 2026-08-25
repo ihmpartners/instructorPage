@@ -7,7 +7,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <link rel="manifest" href="manifest.json">
-<title>IMSOARING SPL Training Record</title>
+<title>SPL Training Record</title>
 <style>
 /* ---------------------------------------------------------------- tokens
    Palette taken from a UK VFR chart: chart paper, ink, airspace magenta,
@@ -83,6 +83,16 @@ main{padding:14px 14px 90px}
 .strip.done{border-left-color:var(--green)}
 .strip.part{border-left-color:var(--amber)}
 .strip .fields{display:flex;flex-wrap:wrap;gap:4px 18px;margin-top:8px}
+.flights-tog{text-align:left;cursor:pointer}
+.agebadge{display:inline-block;font:600 .62rem var(--mono);letter-spacing:.03em;
+  padding:2px 6px;margin-left:6px;border:1px solid var(--rule);border-radius:3px;
+  color:var(--ink-2);background:var(--paper);vertical-align:middle}
+.ai-text{background:var(--paper);border:1px solid var(--rule);border-radius:3px;
+  padding:11px 13px;margin-top:10px}
+.ai-text p{font-size:.9rem;line-height:1.55;margin:0 0 .8em}
+.ai-text p:last-child{margin-bottom:0}
+.block.ai{border-left:4px solid var(--blue)}
+.block.ai > h3{color:var(--blue)}
 .strip .f{font:.74rem/1.3 var(--mono);color:var(--ink-2)}
 .strip .f b{display:block;font-weight:600;color:var(--ink);font-size:.85rem}
 .strip h2{margin:0;font:600 1.15rem/1.25 var(--sans)}
@@ -148,25 +158,27 @@ label.chk input:checked + span{color:var(--ink-2)}
   padding:9px 12px;margin:0 0 1px;border-radius:3px 3px 0 0;
 }
 .item{background:var(--card);border:1px solid var(--rule);border-top:0;
-  padding:10px 12px;display:flex;gap:10px;align-items:center}
+  padding:10px 12px;display:flex;gap:8px;align-items:center}
 .item:first-of-type{border-top:1px solid var(--rule)}
-.item .t{flex:1;font-size:.92rem;line-height:1.4}
+.item .t{flex:1;font-size:.92rem;line-height:1.4;min-width:0}
 .item .t em{font-style:normal;color:var(--ink-2);font:.72rem var(--mono)}
-.marks{display:flex;gap:5px;flex:0 0 auto}
+.marks{display:flex;gap:4px;flex:0 0 auto}
 .mark{
-  width:38px;min-height:var(--tap);display:grid;place-items:center;gap:1px;
+  width:34px;min-height:var(--tap);display:grid;place-items:center;gap:1px;
   border:1px solid var(--rule);border-radius:3px;background:var(--paper);
-  font:600 .66rem/1 var(--mono);color:var(--ink-2);
+  font:600 .64rem/1 var(--mono);color:var(--ink-2);
 }
-.mark small{font-size:.56rem;opacity:.75;font-weight:400}
+.mark small{font-size:.54rem;opacity:.75;font-weight:400}
 .mark[data-on="1"]{background:var(--green-soft);border-color:var(--green);color:var(--green)}
-.legend{display:flex;gap:5px;justify-content:flex-end;margin-bottom:6px}
+.mark.attempt small{opacity:1;font-weight:600;color:var(--blue)}
+.mark.attempt.undoable small{text-decoration:underline;text-decoration-style:dotted}
+.legend{display:flex;gap:4px;justify-content:flex-end;margin-bottom:6px}
 .grp.gone{opacity:.55}
 .item.gone{opacity:.55;text-decoration:line-through;text-decoration-color:var(--rule)}
 .rowdel{flex:0 0 40px;min-height:40px;min-width:40px;display:grid;place-items:center;
   color:var(--ink-2);font:600 1rem/1 var(--mono);border:1px solid var(--rule);border-radius:3px}
 .grp > h3 .rowdel{float:right;margin-top:-4px}
-.legend span{width:38px;text-align:center;font:600 .6rem var(--mono);
+.legend span{width:34px;text-align:center;font:600 .6rem var(--mono);
   letter-spacing:.04em;color:var(--ink-2);text-transform:uppercase}
 
 /* ---------------------------------------------------------------- lists */
@@ -329,9 +341,71 @@ let S = load() || {
   instructor:"", activeStudent:null, students:[], videos:{},
   theme:"light", size:"m"
 };
-S.sync = S.sync || { url:"", token:"", caa:"", name:"", lastPull:0, lastPush:0, at:0, err:"" };
+S.sync = S.sync || { url:"", token:"", caa:"", name:"", lastPull:0, lastPush:0, at:0, err:"", canEdit:false, aiEnabled:false };
 S.edits = S.edits || {};
 S.cardHidden = S.cardHidden || {};
+
+/* Attempts against a single card line for the active student (a quick tally,
+   not the fuller notes kept on a lesson's own Attempt tab). Stored as
+   append-only events, like the lesson attempts, so two instructors tapping
+   "+1" offline both count — merging two counters by last-write-wins would
+   silently drop one of them. Kept per student, since the same syllabus line
+   is shared by every trainee on the card. */
+function cardAttemptsFor(s, itemId){ return live((s.cardAttempts || {})[itemId]); }
+function addCardAttempt(s, itemId){
+  s.cardAttempts = s.cardAttempts || {};
+  (s.cardAttempts[itemId] = s.cardAttempts[itemId] || []).push({
+    id: uid("ca"), d: today(), by: S.instructor || "", u: Date.now() });
+  save(); queueSync();
+  noteTrainingHappened(s);
+}
+function undoLastCardAttempt(s, itemId){
+  const list = (s.cardAttempts || {})[itemId] || [];
+  const mine = list.filter(a => !a.del && a.d === today())
+                   .sort((a,b) => b.u - a.u)[0];
+  if(!mine) return false;
+  mine.del = 1; mine.u = Date.now();
+  save(); queueSync();
+  return true;
+}
+/* ------------------------------------------------------------- flights log
+   A simple tally of launches, kept per student as append-only events like
+   the card attempts above — same reasoning: two instructors adding entries
+   offline must both count, which a shared counter can't guarantee.
+
+   Most entries are never tapped in directly. Any B/T/S mark or a saved
+   lesson attempt calls noteTrainingHappened(), which logs one flight for
+   today if — and only if — nothing has been logged for this student today
+   already. That's the guard against double-counting a single session: no
+   matter how many exercises get ticked off in one visit, at most one
+   automatic entry lands per calendar day. The manual "+1 Flight" button
+   bypasses that guard (with a confirmation) for the genuine edge case of two
+   real launches in one day. */
+function flightsFor(s){ return live(s.flights || []); }
+const flightTotal = s => flightsFor(s).length;
+
+function noteTrainingHappened(s){
+  if(!s) return;
+  s.flights = s.flights || [];
+  if(flightsFor(s).some(f => f.d === today())) return;   // already logged today
+  s.flights.push({ id:uid("flt"), d:today(), by:S.instructor || "", auto:1, u:Date.now() });
+  save(); queueSync();
+  toast(`Flight logged for today \u2014 ${s.name} has flown ${flightTotal(s)}`);
+}
+function addFlightManual(s){
+  const already = flightsFor(s).some(f => f.d === today());
+  if(already && !confirm(`${s.name} already has a flight logged today. ` +
+                          `Add a second one for a genuine second session?`)) return;
+  s.flights = s.flights || [];
+  s.flights.push({ id:uid("flt"), d:today(), by:S.instructor || "", u:Date.now() });
+  save(); queueSync();
+}
+function removeFlight(s, id){
+  const f = (s.flights || []).find(x => x.id === id);
+  if(!f) return;
+  f.del = 1; f.u = Date.now();
+  save(); queueSync();
+}
 
 /* Lines or whole lessons the club has removed from the SPL card — an exercise
    that does not apply to their fleet, say. Shared like an edit: newest
@@ -374,8 +448,12 @@ function migrate(){
   const stamp = o => { if(!o.u){ o.u = now; touched = true; } };
   S.students.forEach(st => {
     stamp(st);
+    st.cardAttempts = st.cardAttempts || {};
+    st.flights = st.flights || [];
     Object.values(st.marks || {}).forEach(m => Object.values(m).forEach(stamp));
     (st.attempts || []).forEach(a => { if(!a.id){ a.id = uid("att"); touched = true; } stamp(a); });
+    Object.values(st.cardAttempts).forEach(list => (list || []).forEach(stamp));
+    st.flights.forEach(stamp);
   });
   Object.entries(S.videos || {}).forEach(([lid, list]) =>
     list.forEach(v => { if(!v.id){ v.id = uid("vid"); v.lesson = lid; touched = true; } stamp(v); }));
@@ -390,9 +468,9 @@ function student(){
   const s = S.students.find(s => s.id === S.activeStudent);
   return (s && !s.archived) ? s : null;
 }
-function newStudent(name){
-  const s = { id:uid("stu"), name, started:today(), archived:0, u:Date.now(),
-              marks:{}, attempts:[], notes:"" };
+function newStudent(name, age){
+  const s = { id:uid("stu"), name, started:today(), age: age || null, archived:0, u:Date.now(),
+              marks:{}, attempts:[], cardAttempts:{}, flights:[], notes:"" };
   S.students.push(s); S.activeStudent = s.id; save(); queueSync(); return s;
 }
 /* Ids have to be unique across every phone in the club, hence the random tail. */
@@ -496,6 +574,93 @@ function progressOf(s, lessonId){
 
 /* ------------------------------------------------------------ the routes */
 let cardEditing = false;
+let flightsOpen = false;
+let aiOpen = false;
+
+/* ------------------------------------------------------------- AI insights
+   Only aggregate numbers are ever sent — no name, no free-text notes. The
+   actual prompt is built server-side from these numbers, so this app never
+   constructs or transmits arbitrary text to the model. The feature only
+   appears at all when the club's server reports it is switched on. */
+let aiResults = {};   // studentId -> { text, at } — kept in memory only, never synced
+
+function buildAiSummary(s){
+  const groups = visibleCard().map(g => {
+    let briefed = 0, taught = 0, sat = 0, attempts = 0;
+    g.items.forEach(it => {
+      const m = s.marks[it.id] || {};
+      if(on(m,"brief")) briefed++;
+      if(on(m,"taught")) taught++;
+      if(on(m,"sat")) sat++;
+      attempts += cardAttemptsFor(s, it.id).length;
+    });
+    return { name:g.title, total:g.items.length, briefed, taught, sat, attempts };
+  });
+  return {
+    ageYears: s.age || undefined,
+    startedDate: s.started || undefined,
+    todayDate: today(),
+    flights: flightTotal(s),
+    groups,
+  };
+}
+
+async function requestAiInsight(s){
+  if(!syncReady()) return toast("Link this phone to the club to use AI insights");
+  aiResults[s.id] = { loading:true };
+  routeCard();
+  try{
+    const res = await fetch(S.sync.url.replace(/\/+$/,"") + "/v1/analyse", {
+      method:"POST",
+      headers:{ "content-type":"application/json", "authorization":"Bearer " + S.sync.token },
+      body: JSON.stringify(buildAiSummary(s)),
+    });
+    const data = await res.json();
+    if(!res.ok) throw new Error(data.error || ("HTTP " + res.status));
+    aiResults[s.id] = { text:data.text, remaining:data.remaining, at:Date.now() };
+  }catch(e){
+    aiResults[s.id] = { error:String(e.message || e) };
+  }
+  routeCard();
+}
+
+function renderAiPanel(s){
+  const r = aiResults[s.id];
+  return `<div class="block ai">
+    <h3>AI insights</h3>
+    <p class="small muted" style="margin:-2px 0 10px">Sends this student's age (if
+    set), flight count and exercise stats to Claude for a training-progress summary.
+    Never sends the student's name or your written notes. Nothing here is saved to
+    the training record \u2014 copy anything worth keeping into your own notes.</p>
+    ${r && r.loading ? `<p class="muted small">Thinking\u2026</p>` : ""}
+    ${r && r.error ? `<p class="small" style="color:var(--mag)">${esc(r.error)}</p>` : ""}
+    ${r && r.text ? `<div class="ai-text">${r.text.split(/\n{2,}/).map(p =>
+        `<p>${esc(p.trim())}</p>`).join("")}</div>
+       <p class="small muted" style="margin-top:8px">Generated ${ago(r.at)}${
+         typeof r.remaining === "number" ? ` \u00b7 ${r.remaining} request${r.remaining===1?"":"s"} left today` : ""}</p>`
+      : ""}
+    <button class="btn ghost sm" id="askai" ${r && r.loading ? "disabled" : ""}>
+      ${r && r.text ? "Ask again" : "Ask Claude for insights"}</button>
+  </div>`;
+}
+
+function renderFlights(s){
+  const list = flightsFor(s).slice().sort((a,b) => b.u - a.u);
+  return `<div class="block">
+    <h3>Flights \u00b7 ${flightTotal(s)} logged</h3>
+    <p class="small muted" style="margin:-2px 0 10px">One is added automatically the
+    first time anything is briefed, taught, attempted or marked satisfactory on a
+    given day \u2014 at most one per day, however many exercises are covered. Use
+    <b>+1 Flight</b> only for a genuine second launch on the same day.</p>
+    <button class="btn ghost sm" id="addflight">+1 Flight</button>
+    ${list.length ? `<div style="margin-top:12px">${list.map(f => `
+      <div class="item" style="border:0;border-bottom:1px solid var(--rule-2);padding:8px 0">
+        <div class="t"><span class="mono">${fmt(f.d)}</span>
+          ${f.by ? ` <em>${esc(f.by)}</em>` : ""}${f.auto ? ` <em>auto</em>` : ""}</div>
+        <button class="iconbtn" data-delflight="${f.id}" aria-label="Remove">&#215;</button>
+      </div>`).join("")}</div>` : `<p class="muted small" style="margin-top:10px">No flights logged yet.</p>`}
+  </div>`;
+}
 
 function routeCard(){
   const s = student();
@@ -508,7 +673,12 @@ function routeCard(){
     <div class="fields">
       <div class="f">Started<b>${fmt(s.started)}</b></div>
       <div class="f">Exercises satisfactory<b>${countSat(s)} / ${countAll()}</b></div>
+      <button class="f flights-tog" id="flightstog">Flights<b>${flightTotal(s)}</b></button>
+      ${S.sync.aiEnabled ? `<button class="f flights-tog" id="aitog">AI insights<b>${
+        aiResults[s.id] && aiResults[s.id].text ? "\u2713" : "\u2014"}</b></button>` : ""}
     </div></div>`;
+  h += flightsOpen ? renderFlights(s) : "";
+  h += aiOpen ? renderAiPanel(s) : "";
   h += cardEditing
     ? `<div class="editbar"><span>Editing the card \\u2014 remove lines or whole
         lessons your club does not use</span>
@@ -523,10 +693,12 @@ function routeCard(){
       ${cardEditing ? `<button class="rowdel" data-delgrp="${g.id}"
           aria-label="${gHidden?"Restore lesson":"Remove lesson"}">${gHidden?"\\u21a9":"\\u2715"}</button>` : ""}
       </h3>`;
-    if(!gHidden || cardEditing) h += `<div class="legend"><span>B</span><span>T</span><span>S</span></div>`;
+    if(!gHidden || cardEditing) h += `<div class="legend"><span>B</span><span>T</span><span>A</span><span>S</span></div>`;
     if(!gHidden) g.items.forEach(it => {
       const iHidden = isHidden(it.id);
       const m = s.marks[it.id] || {};
+      const attempts = cardAttemptsFor(s, it.id);
+      const undoable = attempts.some(a => a.d === today());
       h += `<div class="item${iHidden?" gone":""}">
         <div class="t">${esc(it.t)}${it.who?` <em>${esc(it.who)}</em>`:""}
           ${it.kind==="theory"?' <em>theory</em>':""}</div>
@@ -534,10 +706,15 @@ function routeCard(){
           ? `<button class="rowdel" data-delitem="${it.id}"
                aria-label="${iHidden?"Restore line":"Remove line"}">${iHidden?"\\u21a9":"\\u2715"}</button>`
           : `<div class="marks">
-              ${["brief","taught","sat"].map((k,i)=>`
+              ${["brief","taught"].map((k,i)=>`
                 <button class="mark" data-mark="${it.id}" data-k="${k}" data-on="${on(m,k)?1:0}"
-                  aria-label="${["Briefed","Taught","Satisfactory"][i]}">
-                  ${"BTS"[i]}<small>${on(m,k)?fmt(on(m,k).d):""}</small></button>`).join("")}
+                  aria-label="${["Briefed","Taught"][i]}">
+                  ${"BT"[i]}<small>${on(m,k)?fmt(on(m,k).d):""}</small></button>`).join("")}
+              <button class="mark attempt${undoable?" undoable":""}" data-attempt="${it.id}"
+                aria-label="Log an attempt${undoable?", or tap the number to remove today's last one":""}">
+                A<small>${attempts.length ? attempts.length : ""}</small></button>
+              <button class="mark" data-mark="${it.id}" data-k="sat" data-on="${on(m,"sat")?1:0}"
+                aria-label="Satisfactory">S<small>${on(m,"sat")?fmt(on(m,"sat").d):""}</small></button>
              </div>`}
         </div>`;
     });
@@ -562,6 +739,16 @@ function routeCard(){
   if(edit) edit.onclick = () => { cardEditing = true; routeCard(); };
   const off = view.querySelector("#cardoff");
   if(off) off.onclick = () => { cardEditing = false; routeCard(); };
+  view.querySelector("#flightstog").onclick = () => { flightsOpen = !flightsOpen; routeCard(); };
+  const aitog = view.querySelector("#aitog");
+  if(aitog) aitog.onclick = () => { aiOpen = !aiOpen; routeCard(); };
+  const askai = view.querySelector("#askai");
+  if(askai) askai.onclick = () => requestAiInsight(s);
+  const addFlt = view.querySelector("#addflight");
+  if(addFlt) addFlt.onclick = () => { addFlightManual(s); routeCard(); };
+  view.querySelectorAll("[data-delflight]").forEach(b => b.onclick = () => {
+    removeFlight(s, b.dataset.delflight); routeCard();
+  });
   view.querySelectorAll("[data-delitem]").forEach(b => b.onclick = () => {
     setHidden(b.dataset.delitem, "item", !isHidden(b.dataset.delitem)); routeCard();
   });
@@ -577,11 +764,24 @@ function routeCard(){
     const k = b.dataset.k;
     /* Clearing a mark leaves a tombstone rather than deleting the key, so the
        clearing travels to the other instructors instead of being overwritten. */
-    m[k] = on(m, k) ? { del:1, u:Date.now() }
-                    : { d:today(), by:S.instructor || "", u:Date.now() };
+    const settingOn = !on(m, k);
+    m[k] = settingOn ? { d:today(), by:S.instructor || "", u:Date.now() }
+                     : { del:1, u:Date.now() };
     save(); queueSync();
+    if(settingOn) noteTrainingHappened(s);
     b.dataset.on = on(m,k) ? 1 : 0;
     b.querySelector("small").textContent = on(m,k) ? fmt(on(m,k).d) : "";
+  });
+  view.querySelectorAll("[data-attempt]").forEach(b => b.onclick = e => {
+    const id = b.dataset.attempt;
+    /* The count itself is the undo target, so a mis-tap can be corrected
+       without a separate control competing for the same small button. */
+    if(e.target.tagName === "SMALL" && b.classList.contains("undoable")){
+      if(undoLastCardAttempt(s, id)) routeCard();
+      return;
+    }
+    addCardAttempt(s, id);
+    routeCard();
   });
 }
 const countAll = () => visibleCard().reduce((n,g)=>n+g.items.length,0);
@@ -809,6 +1009,7 @@ function renderAttempt(l){
     });
     delete s.drafts[draftKey];
     save(); queueSync();
+    noteTrainingHappened(s);
     toast(n ? `Attempt saved \u00b7 ${n} card mark${n>1?"s":""} stamped` : "Attempt saved");
     routeLesson(l.id, "attempt");
   };
@@ -1001,10 +1202,11 @@ function queueSync(){
 function outbound(){
   const since = S.sync.lastPush || 0;
   const out = { since:S.sync.lastPull || 0,
-                students:[], marks:[], attempts:[], videos:[], edits:[], card_hidden:[] };
+                students:[], marks:[], attempts:[], videos:[], edits:[],
+                card_hidden:[], card_attempts:[], flights:[] };
   S.students.forEach(st => {
     if(st.u > since) out.students.push({
-      id:st.id, name:st.name, started:st.started || null,
+      id:st.id, name:st.name, started:st.started || null, age:st.age || null,
       archived:st.archived ? 1 : 0, updated_at:st.u });
     Object.entries(st.marks || {}).forEach(([item, m]) =>
       ["brief","taught","sat"].forEach(kind => {
@@ -1021,6 +1223,18 @@ function outbound(){
         result:a.result || null, notes:a.notes || null,
         points:JSON.stringify(a.points || []), pts_of:a.of || 0,
         deleted:a.del ? 1 : 0, updated_at:a.u });
+    });
+    Object.entries(st.cardAttempts || {}).forEach(([itemId, list]) =>
+      (list || []).forEach(a => {
+        if(a.u > since) out.card_attempts.push({
+          id:a.id, student_id:st.id, item_id:itemId,
+          flown_on:a.d || null, by:a.by || null,
+          deleted:a.del ? 1 : 0, updated_at:a.u });
+      }));
+    (st.flights || []).forEach(f => {
+      if(f.u > since) out.flights.push({
+        id:f.id, student_id:st.id, flown_on:f.d || null, by:f.by || null,
+        auto:f.auto ? 1 : 0, deleted:f.del ? 1 : 0, updated_at:f.u });
     });
   });
   Object.entries(S.videos || {}).forEach(([lid, list]) => list.forEach(v => {
@@ -1046,9 +1260,9 @@ function inbound(d){
 
   (d.students || []).forEach(r => {
     let st = find(r.id);
-    if(!st){ st = { id:r.id, marks:{}, attempts:[], u:0 }; S.students.push(st); }
+    if(!st){ st = { id:r.id, marks:{}, attempts:[], cardAttempts:{}, flights:[], u:0 }; S.students.push(st); }
     if(r.updated_at > (st.u || 0)){
-      st.name = r.name; st.started = r.started;
+      st.name = r.name; st.started = r.started; st.age = r.age || null;
       st.archived = r.archived ? 1 : 0; st.u = r.updated_at; changed++;
     }
   });
@@ -1100,6 +1314,29 @@ function inbound(d){
       changed++;
     }
   });
+  (d.card_attempts || []).forEach(r => {
+    const st = find(r.student_id); if(!st) return;
+    st.cardAttempts = st.cardAttempts || {};
+    const list = st.cardAttempts[r.item_id] = st.cardAttempts[r.item_id] || [];
+    let a = list.find(x => x.id === r.id);
+    if(!a){ a = { id:r.id, u:0 }; list.push(a); }
+    if(r.updated_at > (a.u || 0)){
+      a.d = r.flown_on; a.by = r.by; a.u = r.updated_at;
+      if(r.deleted) a.del = 1; else delete a.del;
+      changed++;
+    }
+  });
+  (d.flights || []).forEach(r => {
+    const st = find(r.student_id); if(!st) return;
+    st.flights = st.flights || [];
+    let f = st.flights.find(x => x.id === r.id);
+    if(!f){ f = { id:r.id, u:0 }; st.flights.push(f); }
+    if(r.updated_at > (f.u || 0)){
+      f.d = r.flown_on; f.by = r.by; f.auto = r.auto ? 1 : 0; f.u = r.updated_at;
+      if(r.deleted) f.del = 1; else delete f.del;
+      changed++;
+    }
+  });
   S.students.forEach(st => st.attempts.sort((a,b) =>
     String(b.date || "").localeCompare(String(a.date || ""))));
   /* A phone that has just linked has no student selected but now has a club
@@ -1134,6 +1371,7 @@ async function syncNow(quiet){
     S.sync.at = Date.now();
     S.sync.err = "";
     if(typeof data.can_edit === "boolean") S.sync.canEdit = data.can_edit;
+    if(typeof data.ai_enabled === "boolean") S.sync.aiEnabled = data.ai_enabled;
     save();
     const sent = body.students.length + body.marks.length +
                  body.attempts.length + body.videos.length;
@@ -1157,6 +1395,7 @@ async function linkDevice(url, token){
   if(!res.ok) throw new Error(d.error || ("HTTP " + res.status));
   S.sync.url = clean; S.sync.token = token;
   S.sync.caa = d.caa_ref; S.sync.name = d.name; S.sync.canEdit = !!d.can_edit;
+  S.sync.aiEnabled = !!d.ai_enabled;
   S.instructor = S.instructor || d.name;
   save();
   return d;
@@ -1194,20 +1433,38 @@ function routeStudents(){
     return `<button class="row" onclick="pick('${s.id}')" ${s.id===S.activeStudent?'style="border-color:var(--mag)"':""}>
       <span class="n">${s.id===S.activeStudent?"\u25cf":"\u25cb"}</span>
       <span class="l">${esc(s.name)}
+        <button class="agebadge" data-editage="${s.id}" onclick="event.stopPropagation()"
+          title="Tap to set age">${s.age ? `age ${s.age}` : "add age"}</button>
         <small>started ${fmt(s.started)} \u00b7 ${countSat(s)}/${countAll()} satisfactory \u00b7 ${live(s.attempts).length} attempts</small>
         <span class="bar"><i style="width:${pct}%"></i></span></span>
       <span class="go">&#8250;</span></button>`;
   }).join("") + `
     <span class="lbl">Add a student</span>
     <input type="text" id="sname" placeholder="Student pilot name">
+    <span class="lbl">Age <span class="muted" style="text-transform:none;letter-spacing:0">(optional \u2014 only used for AI insights, if enabled)</span></span>
+    <input type="number" id="sage" placeholder="e.g. 16" min="4" max="100">
     <div style="height:10px"></div><button class="btn" id="sadd">Add student</button>
     ${roster().length?`<div style="height:26px"></div>
       <button class="btn ghost" id="sdel">Remove current student</button>`:""}`;
   view.querySelector("#sadd").onclick = () => {
     const n = view.querySelector("#sname").value.trim();
     if(!n) return toast("Enter a name");
-    newStudent(n); routeStudents(); toast(`${n} added`);
+    const ageVal = parseInt(view.querySelector("#sage").value, 10);
+    newStudent(n, Number.isFinite(ageVal) ? ageVal : null);
+    routeStudents(); toast(`${n} added`);
   };
+  view.querySelectorAll("[data-editage]").forEach(b => b.onclick = () => {
+    const st = S.students.find(x => x.id === b.dataset.editage);
+    const raw = prompt(`Age for ${st.name} (years, leave blank to clear):`, st.age || "");
+    if(raw === null) return;                       // cancelled
+    if(raw.trim() === ""){ st.age = null; }
+    else {
+      const n = parseInt(raw, 10);
+      if(!Number.isFinite(n) || n < 4 || n > 100) return toast("Enter an age between 4 and 100");
+      st.age = n;
+    }
+    st.u = Date.now(); save(); queueSync(); routeStudents();
+  });
   const del = view.querySelector("#sdel");
   if(del) del.onclick = () => {
     const s = student(); if(!s) return;
@@ -1279,6 +1536,21 @@ function routeSettings(){
            syncReady() ? ". Corrections are shared with the other instructors" : ""}.`}</p>
     ${editCount() ? `<div style="height:8px"></div>
       <button class="btn ghost" id="expedits">Export corrections</button>` : ""}`}
+
+    <span class="lbl">AI insights</span>
+    <p class="small muted">${!syncReady()
+      ? `Requires club sync \u2014 the app never calls Claude directly from the
+         phone, since that would mean an API key living on the device. Link
+         to your club first.`
+      : S.sync.aiEnabled
+      ? `On for this club. Open a student's record card and tap
+         <span class="mono">AI insights</span> for a short progress summary from
+         Claude. Only age, flight count and exercise stats are sent \u2014 never a
+         name or your written notes \u2014 and nothing is saved automatically.`
+      : `Off. Your CFI can turn this on by setting
+         <span class="mono">ANTHROPIC_API_KEY</span> on the club server; it costs
+         Anthropic API usage per request, so it's opt-in rather than on by
+         default.`}</p>
 
     <span class="lbl">Backup</span>
     <p class="small muted">${syncReady()
@@ -1416,7 +1688,7 @@ function router(){
   const parts = (location.hash.replace(/^#\/?/, "") || "card").split("/");
   tabsEl.hidden = true; refEl.hidden = true; backEl.hidden = true;
   if(parts[0] !== "l"){ editing = false; document.body.classList.remove("editing"); }
-  if(parts[0] !== "card") cardEditing = false;
+  if(parts[0] !== "card"){ cardEditing = false; flightsOpen = false; aiOpen = false; }
   document.querySelectorAll("nav.bottom a").forEach(a =>
     a.removeAttribute("aria-current"));
   const key = parts[0] === "l" ? (LESSONS.some(l=>l.id===parts[1]) ? "lessons" : "ref") : parts[0];
