@@ -180,6 +180,11 @@ label.chk input:checked + span{color:var(--ink-2)}
 .legend{display:flex;gap:4px;justify-content:flex-end;margin-bottom:6px}
 .grp.gone{opacity:.55}
 .item.gone{opacity:.55;text-decoration:line-through;text-decoration-color:var(--rule)}
+.item.heading{background:var(--rule-2);border-radius:3px}
+.item.heading .t{font-weight:600;color:var(--ink)}
+.item .t.edit-target{cursor:text;border-bottom:1px dashed var(--rule);padding-bottom:2px}
+.item .t.edit-target:hover{background:var(--rule-2)}
+.rowbtns{display:flex;gap:6px;flex:0 0 auto}
 .rowdel{flex:0 0 40px;min-height:40px;min-width:40px;display:grid;place-items:center;
   color:var(--ink-2);font:600 1rem/1 var(--mono);border:1px solid var(--rule);border-radius:3px}
 .grp > h3 .rowdel{float:right;margin-top:-4px}
@@ -376,6 +381,7 @@ let S = load() || {
 S.sync = S.sync || { url:"", token:"", caa:"", name:"", lastPull:0, lastPush:0, at:0, err:"", canEdit:false, aiEnabled:false };
 S.edits = S.edits || {};
 S.cardHidden = S.cardHidden || {};
+S.cardNoBoxes = S.cardNoBoxes || {};   // itemId -> {h,u}: hide the B/T/A/S row, keep the line as a label
 
 /* Attempts against a single card line for the active student (a quick tally,
    not the fuller notes kept on a lesson's own Attempt tab). Stored as
@@ -508,19 +514,51 @@ function openAttemptSheet(s, itemId){
   draw();
 }
 
+/* Correcting the wording of a card line. Reuses the same S.edits store as
+   the manual's paragraph corrections — same shape (id, original, new text),
+   same club-wide sync, same editor-only permission — just keyed on a card
+   item id ("c0_1") instead of a manual paragraph id ("L8.3f9a2c01"). The two
+   never collide: paragraph ids always contain a dot, card item ids never do,
+   which is also how the corrections.json export tells them apart and skips
+   these, since a card item has nothing to do with the PDF rebuild pipeline. */
+function openItemTextSheet(itemId, origText){
+  const cur = edited(itemId, origText);
+  const backdrop = openSheet(`
+    <h3>Edit this line</h3>
+    <p class="sub">Changes apply to the record card for every instructor.</p>
+    <textarea id="itext" style="min-height:110px">${esc(cur)}</textarea>
+    <div style="display:flex;gap:8px;margin-top:12px">
+      <button class="btn sm" id="itsave">Save</button>
+      <button class="btn ghost sm" id="itcancel">Cancel</button>
+      ${S.edits[itemId] && !S.edits[itemId].del
+        ? `<span style="flex:1"></span><button class="btn ghost sm" id="itrevert">Revert</button>` : ""}
+    </div>`);
+  backdrop.querySelector("#itcancel").onclick = closeSheet;
+  backdrop.querySelector("#itsave").onclick = () => {
+    setEdit(itemId, backdrop.querySelector("#itext").value, origText);
+    closeSheet(); routeCard();
+  };
+  const rev = backdrop.querySelector("#itrevert");
+  if(rev) rev.onclick = () => { clearEdit(itemId); closeSheet(); routeCard(); };
+}
+
 /* ------------------------------------------------------------- flights log
    A simple tally of launches, kept per student as append-only events like
    the card attempts above — same reasoning: two instructors adding entries
    offline must both count, which a shared counter can't guarantee.
 
-   Most entries are never tapped in directly. Any B/T/S mark or a saved
-   lesson attempt calls noteTrainingHappened(), which logs one flight for
-   today if — and only if — nothing has been logged for this student today
-   already. That's the guard against double-counting a single session: no
-   matter how many exercises get ticked off in one visit, at most one
-   automatic entry lands per calendar day. The manual "+1 Flight" button
-   bypasses that guard (with a confirmation) for the genuine edge case of two
-   real launches in one day. */
+   Most entries are never tapped in directly. Marking something "taught", a
+   quick attempt tally on the record card, or a saved lesson attempt all call
+   noteTrainingHappened(), which logs one flight for today if — and only if —
+   nothing has been logged for this student today already. Briefing and
+   marking something satisfactory don't call it on their own: a brief can
+   happen on the ground, and "satisfactory" doesn't itself mean something new
+   was flown today, so neither is evidence a flight happened. The same-day
+   guard is what stops a lesson that's both taught and attempted in one visit
+   from counting as two — at most one automatic entry lands per calendar day,
+   however many of those trigger. The manual "+1 Flight" button bypasses that
+   guard (with a confirmation) for the genuine edge case of two real launches
+   in one day. */
 function flightsFor(s){ return live(s.flights || []); }
 const flightTotal = s => flightsFor(s).length;
 
@@ -556,6 +594,33 @@ function setHidden(id, kind, hide){
   S.cardHidden[id] = { kind, h: hide ? 1 : 0, u: Date.now() };
   save(); queueSync();
 }
+/* Some card lines are really headings ("Stall Symptoms:") rather than
+   things to tick off. Hiding just the checkbox row keeps the line — and its
+   wording — on the card as a label, without it counting toward totals or
+   showing up as something to mark. Kept separate from isHidden/setHidden
+   above, which remove a line (or a whole lesson) entirely; the two are
+   independent so a heading line still shows even while club-editing. */
+const boxesHidden = id => !!(S.cardNoBoxes[id] && S.cardNoBoxes[id].h);
+function setBoxesHidden(id, hide){
+  S.cardNoBoxes[id] = { h: hide ? 1 : 0, u: Date.now() };
+  save(); queueSync();
+}
+function noBoxesList(){
+  return Object.entries(S.cardNoBoxes)
+    .filter(([,v]) => v.h)
+    .map(([id]) => {
+      const g = CARD.find(x => x.items.some(i => i.id === id));
+      const it = g && g.items.find(i => i.id === id);
+      return it ? { id, label: edited(id, it.t), group: g.title } : null;
+    })
+    .filter(Boolean);
+}
+/* Items with their checkboxes hidden still belong on the card and still
+   need to render, so they stay in visibleCard(); they just aren't things a
+   student can be marked satisfactory on. This is what counts totals,
+   progress bars and the Attempt tab's syllabus checklist should use
+   instead of a group's raw item list. */
+function checkableItems(g){ return g.items.filter(it => !boxesHidden(it.id)); }
 function hiddenList(){
   return Object.entries(S.cardHidden)
     .filter(([,v]) => v.h)
@@ -655,7 +720,7 @@ function blocksFor(lesson, roles){
 function checkpoints(lesson){
   const out = [];
   visibleCard().filter(g => g.lessons.includes(lesson.id)).forEach(g =>
-    g.items.forEach(i => out.push({ id:i.id, t:i.t, from:"Syllabus", card:i.id })));
+    checkableItems(g).forEach(i => out.push({ id:i.id, t:edited(i.id, i.t), from:"Syllabus", card:i.id })));
   const add = (role, label) => blocksFor(lesson,[role]).forEach(b =>
     b.p.filter(p => p.b || p.t.length < 130).forEach(p =>
       out.push({ id:hash(lesson.id+p.t), t:p.t, from:label })));
@@ -690,9 +755,9 @@ function renderPoints(points){
     return `class="para${e && !e.del ? " edited" : ""}" data-para="${p.i || ""}"`;
   };
   const bl = points.filter(p => p.b), pr = points.filter(p => !p.b);
-  let h = pr.map(p => `<p ${mark(p)}>${esc(edited(p))}</p>`).join("");
+  let h = pr.map(p => `<p ${mark(p)}>${esc(edited(p.i, p.t))}</p>`).join("");
   if(bl.length) h += `<ul class="pts">${bl.map(p =>
-    `<li ${mark(p)}>${esc(edited(p))}</li>`).join("")}</ul>`;
+    `<li ${mark(p)}>${esc(edited(p.i, p.t))}</li>`).join("")}</ul>`;
   return h;
 }
 function renderBlocks(list, cls){
@@ -706,7 +771,7 @@ function renderBlocks(list, cls){
   }).join("");
 }
 function progressOf(s, lessonId){
-  const ids = visibleCard().filter(g => g.lessons.includes(lessonId)).flatMap(g => g.items.map(i=>i.id));
+  const ids = visibleCard().filter(g => g.lessons.includes(lessonId)).flatMap(g => checkableItems(g).map(i=>i.id));
   if(!ids.length) return null;
   const done = ids.filter(i => on(s.marks[i], "sat")).length;
   return { done, total:ids.length };
@@ -820,8 +885,9 @@ function routeCard(){
   h += flightsOpen ? renderFlights(s) : "";
   h += aiOpen ? renderAiPanel(s) : "";
   h += cardEditing
-    ? `<div class="editbar"><span>Editing the card \u2014 remove lines or whole
-        lessons your club does not use</span>
+    ? `<div class="editbar"><span>Editing the card \u2014 remove lines or lessons,
+        hide checkboxes on heading-style lines, or tap a line's text to
+        correct its wording</span>
         <button class="btn sm" id="cardoff">Done</button></div>`
     : `<p class="small muted">Tap <span class="mono">B</span> briefed, <span class="mono">T</span> taught,
        <span class="mono">S</span> satisfactory. Each tap stamps your name and today's date.
@@ -836,15 +902,21 @@ function routeCard(){
     if(!gHidden || cardEditing) h += `<div class="legend"><span>B</span><span>T</span><span>A</span><span>S</span></div>`;
     if(!gHidden) g.items.forEach(it => {
       const iHidden = isHidden(it.id);
+      const noBoxes = boxesHidden(it.id);
       const m = s.marks[it.id] || {};
       const attempts = cardAttemptsFor(s, it.id);
-      h += `<div class="item${iHidden?" gone":""}">
-        <div class="t">${esc(it.t)}${it.who?` <em>${esc(it.who)}</em>`:""}
+      const label = edited(it.id, it.t);
+      h += `<div class="item${iHidden?" gone":""}${(noBoxes && !cardEditing)?" heading":""}">
+        <div class="t${cardEditing?" edit-target":""}"${cardEditing?` data-edititem="${it.id}"`:""}>${esc(label)}${it.who?` <em>${esc(it.who)}</em>`:""}
           ${it.kind==="theory"?' <em>theory</em>':""}</div>
         ${cardEditing
-          ? `<button class="rowdel" data-delitem="${it.id}"
-               aria-label="${iHidden?"Restore line":"Remove line"}">${iHidden?"\u21a9":"\u2715"}</button>`
-          : `<div class="marks">
+          ? `<div class="rowbtns">
+               <button class="rowdel" data-boxes="${it.id}"
+                 aria-label="${noBoxes?"Show the checkboxes on this line":"Hide the checkboxes on this line \u2014 use for headings"}">${noBoxes?"\u2610":"\u2611"}</button>
+               <button class="rowdel" data-delitem="${it.id}"
+                 aria-label="${iHidden?"Restore line":"Remove line"}">${iHidden?"\u21a9":"\u2715"}</button>
+             </div>`
+          : (noBoxes ? "" : `<div class="marks">
               ${["brief","taught"].map((k,i)=>{
                 const isOn = !!on(m,k), label = ["Briefed","Taught"][i];
                 return `<button class="mark" data-mark="${it.id}" data-k="${k}" data-on="${isOn?1:0}"
@@ -863,7 +935,7 @@ function routeCard(){
                   S<small${isOn?` class="dot" data-markinfo="${it.id}" data-k="sat"`:""}
                     >${isOn?"\u25cf":""}</small></button>`;
               })()}
-             </div>`}
+             </div>`)}
         </div>`;
     });
     if(g.lessons.length && (!gHidden || cardEditing)) h += `<div style="margin-top:8px" class="seg">` +
@@ -880,6 +952,15 @@ function routeCard(){
         <div class="t">${esc(x.label)}${x.group?` <em>${esc(x.group)}</em>`:""}
           ${x.kind==="group"?" <em>whole lesson</em>":""}</div>
         <button class="rowdel" data-restore="${x.id}" aria-label="Restore">&#8617;</button>
+      </div>`).join("")}`;
+
+  const nobox = noBoxesList();
+  if(cardEditing && nobox.length) h += `
+    <h3 style="font:600 .74rem var(--mono);letter-spacing:.08em;text-transform:uppercase;
+        color:var(--ink-2);margin:26px 0 10px">Checkboxes hidden on these lines</h3>
+    ${nobox.map(x => `<div class="item">
+        <div class="t">${esc(x.label)} <em>${esc(x.group)}</em></div>
+        <button class="rowdel" data-restoreboxes="${x.id}" aria-label="Show checkboxes again">&#8617;</button>
       </div>`).join("")}`;
 
   view.innerHTML = h;
@@ -900,6 +981,18 @@ function routeCard(){
   view.querySelectorAll("[data-delitem]").forEach(b => b.onclick = () => {
     setHidden(b.dataset.delitem, "item", !isHidden(b.dataset.delitem)); routeCard();
   });
+  view.querySelectorAll("[data-boxes]").forEach(b => b.onclick = () => {
+    setBoxesHidden(b.dataset.boxes, !boxesHidden(b.dataset.boxes)); routeCard();
+  });
+  view.querySelectorAll("[data-restoreboxes]").forEach(b => b.onclick = () => {
+    setBoxesHidden(b.dataset.restoreboxes, false); routeCard();
+  });
+  view.querySelectorAll("[data-edititem]").forEach(el => el.onclick = () => {
+    const id = el.dataset.edititem;
+    const g = CARD.find(x => x.items.some(i => i.id === id));
+    const it = g && g.items.find(i => i.id === id);
+    if(it) openItemTextSheet(id, it.t);
+  });
   view.querySelectorAll("[data-delgrp]").forEach(b => b.onclick = () => {
     setHidden(b.dataset.delgrp, "group", !isHidden(b.dataset.delgrp)); routeCard();
   });
@@ -919,7 +1012,11 @@ function routeCard(){
     m[k] = settingOn ? { d:today(), by:S.instructor || "", u:Date.now() }
                      : { del:1, u:Date.now() };
     save(); queueSync();
-    if(settingOn) noteTrainingHappened(s);
+    /* Only "taught" and an attempt (here or on the lesson's own Attempt tab)
+       count as training having actually happened for the flights log —
+       briefing can happen on the ground, and marking something satisfactory
+       doesn't by itself mean anything new was flown today. */
+    if(settingOn && k === "taught") noteTrainingHappened(s);
     const isOn = !!on(m, k);
     b.dataset.on = isOn ? 1 : 0;
     const dot = b.querySelector("small");
@@ -941,9 +1038,9 @@ function wireMarkDot(dot, s){
     if(dot.dataset.markinfo) openMarkSheet(s, dot.dataset.markinfo, dot.dataset.k);
   };
 }
-const countAll = () => visibleCard().reduce((n,g)=>n+g.items.length,0);
+const countAll = () => visibleCard().reduce((n,g)=>n+checkableItems(g).length,0);
 const countSat = s => {
-  const ids = new Set(visibleCard().flatMap(g => g.items.map(i => i.id)));
+  const ids = new Set(visibleCard().flatMap(g => checkableItems(g).map(i => i.id)));
   return Object.entries(s.marks).filter(([id,m]) => ids.has(id) && on(m,"sat")).length;
 };
 
@@ -1070,7 +1167,7 @@ function openEditor(el, l, tab){
   if(!point) return;
   const box = document.createElement("div");
   box.innerHTML = `
-    <textarea id="etext" style="min-height:150px">${esc(edited(point))}</textarea>
+    <textarea id="etext" style="min-height:150px">${esc(edited(point.i, point.t))}</textarea>
     <p class="small muted" style="margin:6px 0 0">Return starts a new line.</p>
     <div style="display:flex;gap:8px;margin-top:8px">
       <button class="btn sm" id="esave">Save</button>
@@ -1236,9 +1333,9 @@ function wireVideo(l){
    matches, rather than an edit silently landing on the wrong text. */
 let editing = false;
 
-function edited(pt){
-  const e = S.edits[pt.i];
-  return (e && !e.del) ? e.t : pt.t;
+function edited(id, origText){
+  const e = S.edits[id];
+  return (e && !e.del) ? e.t : origText;
 }
 function setEdit(id, text, orig){
   if(text.trim() === orig.trim()){ delete S.edits[id]; }
@@ -1258,6 +1355,7 @@ function editsAsCorrections(){
   const rules = [];
   for(const [id, e] of Object.entries(S.edits)){
     if(e.del || !e.o) continue;
+    if(!id.includes(".")) continue;   // a card-item id ("c0_1"), not a manual paragraph
     const sid = id.split(".")[0];
     const sec = byId[sid];
     rules.push({ find:e.o, replace:e.t, in: sec ? sec.ref : sid });
@@ -1409,6 +1507,14 @@ function outbound(){
     if(v.u > since) out.card_hidden.push({
       id, kind:v.kind, hidden:v.h ? 1 : 0, updated_at:v.u });
   });
+  /* Riding the same wire channel as cardHidden above, distinguished by a
+     "boxes" kind and a suffixed id — card_hidden's id is a primary key
+     server-side, and an item can independently be both fully hidden and
+     have its boxes hidden, so the two must never share a row. */
+  Object.entries(S.cardNoBoxes || {}).forEach(([id, v]) => {
+    if(v.u > since) out.card_hidden.push({
+      id: id + "!boxes", kind:"boxes", hidden:v.h ? 1 : 0, updated_at:v.u });
+  });
   return out;
 }
 
@@ -1466,6 +1572,15 @@ function inbound(d){
     }
   });
   (d.card_hidden || []).forEach(r => {
+    if(r.kind === "boxes"){
+      const plainId = r.id.replace(/!boxes$/, "");
+      const cur = S.cardNoBoxes[plainId];
+      if(r.updated_at > ((cur || {}).u || 0)){
+        S.cardNoBoxes[plainId] = { h:r.hidden ? 1 : 0, u:r.updated_at };
+        changed++;
+      }
+      return;
+    }
     const cur = S.cardHidden[r.id];
     if(r.updated_at > ((cur || {}).u || 0)){
       S.cardHidden[r.id] = { kind:r.kind, h:r.hidden ? 1 : 0, u:r.updated_at };
