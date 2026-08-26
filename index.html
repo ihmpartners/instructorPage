@@ -381,7 +381,7 @@ let S = load() || {
 S.sync = S.sync || { url:"", token:"", caa:"", name:"", lastPull:0, lastPush:0, at:0, err:"", canEdit:false, aiEnabled:false };
 S.edits = S.edits || {};
 S.cardHidden = S.cardHidden || {};
-S.cardNoBoxes = S.cardNoBoxes || {};   // itemId -> {h,u}: hide the B/T/A/S row, keep the line as a label
+S.cardNoBoxes = S.cardNoBoxes || {};   // "itemId#kind" -> {h,u}: hide one checkbox on one line
 
 /* Attempts against a single card line for the active student (a quick tally,
    not the fuller notes kept on a lesson's own Attempt tab). Stored as
@@ -595,32 +595,38 @@ function setHidden(id, kind, hide){
   save(); queueSync();
 }
 /* Some card lines are really headings ("Stall Symptoms:") rather than
-   things to tick off. Hiding just the checkbox row keeps the line — and its
-   wording — on the card as a label, without it counting toward totals or
-   showing up as something to mark. Kept separate from isHidden/setHidden
-   above, which remove a line (or a whole lesson) entirely; the two are
-   independent so a heading line still shows even while club-editing. */
-const boxesHidden = id => !!(S.cardNoBoxes[id] && S.cardNoBoxes[id].h);
-function setBoxesHidden(id, hide){
-  S.cardNoBoxes[id] = { h: hide ? 1 : 0, u: Date.now() };
+   things to tick off — and some just don't need all four columns (an item
+   that's never really "attempted" separately, say). Each of B/T/A/S can be
+   hidden individually per line, kept separate from isHidden/setHidden
+   above, which remove a line (or a whole lesson) entirely; a line with
+   every box hidden still shows, just as a plain label, since it's the boxes
+   being hidden, not the line. Keyed as "itemId#kind" so the four are
+   independent of each other and of any full-line hide on the same id. */
+const BOX_KINDS = ["brief", "taught", "attempt", "sat"];
+const BOX_LABEL = { brief:"Briefed", taught:"Taught", attempt:"Attempt", sat:"Satisfactory" };
+const boxKey = (id, kind) => `${id}#${kind}`;
+const boxHidden = (id, kind) => !!(S.cardNoBoxes[boxKey(id,kind)] && S.cardNoBoxes[boxKey(id,kind)].h);
+function setBoxHidden(id, kind, hide){
+  S.cardNoBoxes[boxKey(id,kind)] = { h: hide ? 1 : 0, u: Date.now() };
   save(); queueSync();
 }
 function noBoxesList(){
   return Object.entries(S.cardNoBoxes)
     .filter(([,v]) => v.h)
-    .map(([id]) => {
+    .map(([key]) => {
+      const hashPos = key.lastIndexOf("#");
+      const id = key.slice(0, hashPos), kind = key.slice(hashPos + 1);
       const g = CARD.find(x => x.items.some(i => i.id === id));
       const it = g && g.items.find(i => i.id === id);
-      return it ? { id, label: edited(id, it.t), group: g.title } : null;
+      return it ? { id, kind, label: edited(id, it.t), group: g.title } : null;
     })
     .filter(Boolean);
 }
-/* Items with their checkboxes hidden still belong on the card and still
-   need to render, so they stay in visibleCard(); they just aren't things a
-   student can be marked satisfactory on. This is what counts totals,
-   progress bars and the Attempt tab's syllabus checklist should use
-   instead of a group's raw item list. */
-function checkableItems(g){ return g.items.filter(it => !boxesHidden(it.id)); }
+/* Only the Satisfactory box is what "X of Y satisfactory" and the syllabus
+   checklist actually mean — an item with Satisfactory hidden was never
+   something to count toward either, whatever's happening with its other
+   three boxes. */
+function checkableItems(g){ return g.items.filter(it => !boxHidden(it.id, "sat")); }
 function hiddenList(){
   return Object.entries(S.cardHidden)
     .filter(([,v]) => v.h)
@@ -902,39 +908,43 @@ function routeCard(){
     if(!gHidden || cardEditing) h += `<div class="legend"><span>B</span><span>T</span><span>A</span><span>S</span></div>`;
     if(!gHidden) g.items.forEach(it => {
       const iHidden = isHidden(it.id);
-      const noBoxes = boxesHidden(it.id);
       const m = s.marks[it.id] || {};
       const attempts = cardAttemptsFor(s, it.id);
       const label = edited(it.id, it.t);
-      h += `<div class="item${iHidden?" gone":""}${(noBoxes && !cardEditing)?" heading":""}">
+      const visibleKinds = BOX_KINDS.filter(k => !boxHidden(it.id, k));
+      h += `<div class="item${iHidden?" gone":""}${(!cardEditing && !visibleKinds.length)?" heading":""}">
         <div class="t${cardEditing?" edit-target":""}"${cardEditing?` data-edititem="${it.id}"`:""}>${esc(label)}${it.who?` <em>${esc(it.who)}</em>`:""}
           ${it.kind==="theory"?' <em>theory</em>':""}</div>
         ${cardEditing
           ? `<div class="rowbtns">
-               <button class="rowdel" data-boxes="${it.id}"
-                 aria-label="${noBoxes?"Show the checkboxes on this line":"Hide the checkboxes on this line \u2014 use for headings"}">${noBoxes?"\u2610":"\u2611"}</button>
+               <div class="marks">${BOX_KINDS.map(k => {
+                 const shown = !boxHidden(it.id, k);
+                 return `<button class="mark" data-boxtoggle="${it.id}" data-kind="${k}" data-on="${shown?1:0}"
+                   aria-label="${BOX_LABEL[k]}${shown?" \u2014 shown, tap to hide it on this line":" \u2014 hidden, tap to show it again"}">
+                   ${{brief:"B",taught:"T",attempt:"A",sat:"S"}[k]}</button>`;
+               }).join("")}</div>
                <button class="rowdel" data-delitem="${it.id}"
                  aria-label="${iHidden?"Restore line":"Remove line"}">${iHidden?"\u21a9":"\u2715"}</button>
              </div>`
-          : (noBoxes ? "" : `<div class="marks">
-              ${["brief","taught"].map((k,i)=>{
-                const isOn = !!on(m,k), label = ["Briefed","Taught"][i];
+          : (!visibleKinds.length ? "" : `<div class="marks">
+              ${["brief","taught"].filter(k => visibleKinds.includes(k)).map((k)=>{
+                const isOn = !!on(m,k), lbl = {brief:"Briefed",taught:"Taught"}[k];
                 return `<button class="mark" data-mark="${it.id}" data-k="${k}" data-on="${isOn?1:0}"
-                  aria-label="${label}${isOn?" \u2014 marked; tap the dot for details or to delete":""}">
-                  ${"BT"[i]}<small${isOn?` class="dot" data-markinfo="${it.id}" data-k="${k}"`:""}
+                  aria-label="${lbl}${isOn?" \u2014 marked; tap the dot for details or to delete":""}">
+                  ${{brief:"B",taught:"T"}[k]}<small${isOn?` class="dot" data-markinfo="${it.id}" data-k="${k}"`:""}
                     >${isOn?"\u25cf":""}</small></button>`;
               }).join("")}
-              <button class="mark attempt" data-attempt="${it.id}"
+              ${visibleKinds.includes("attempt") ? `<button class="mark attempt" data-attempt="${it.id}"
                 aria-label="Log an attempt. Double-tap to undo the last one from today.">
                 A<small${attempts.length?` class="dot" data-attinfo="${it.id}"`:""}
-                  >${attempts.length || ""}</small></button>
-              ${(() => {
+                  >${attempts.length || ""}</small></button>` : ""}
+              ${visibleKinds.includes("sat") ? (() => {
                 const isOn = !!on(m,"sat");
                 return `<button class="mark" data-mark="${it.id}" data-k="sat" data-on="${isOn?1:0}"
                   aria-label="Satisfactory${isOn?" \u2014 marked; tap the dot for details or to delete":""}">
                   S<small${isOn?` class="dot" data-markinfo="${it.id}" data-k="sat"`:""}
                     >${isOn?"\u25cf":""}</small></button>`;
-              })()}
+              })() : ""}
              </div>`)}
         </div>`;
     });
@@ -959,8 +969,8 @@ function routeCard(){
     <h3 style="font:600 .74rem var(--mono);letter-spacing:.08em;text-transform:uppercase;
         color:var(--ink-2);margin:26px 0 10px">Checkboxes hidden on these lines</h3>
     ${nobox.map(x => `<div class="item">
-        <div class="t">${esc(x.label)} <em>${esc(x.group)}</em></div>
-        <button class="rowdel" data-restoreboxes="${x.id}" aria-label="Show checkboxes again">&#8617;</button>
+        <div class="t">${esc(x.label)} <em>${esc(BOX_LABEL[x.kind])} \u00b7 ${esc(x.group)}</em></div>
+        <button class="rowdel" data-restoreboxes="${x.id}" data-kind="${x.kind}" aria-label="Show ${esc(BOX_LABEL[x.kind])} again">&#8617;</button>
       </div>`).join("")}`;
 
   view.innerHTML = h;
@@ -981,11 +991,12 @@ function routeCard(){
   view.querySelectorAll("[data-delitem]").forEach(b => b.onclick = () => {
     setHidden(b.dataset.delitem, "item", !isHidden(b.dataset.delitem)); routeCard();
   });
-  view.querySelectorAll("[data-boxes]").forEach(b => b.onclick = () => {
-    setBoxesHidden(b.dataset.boxes, !boxesHidden(b.dataset.boxes)); routeCard();
+  view.querySelectorAll("[data-boxtoggle]").forEach(b => b.onclick = () => {
+    const id = b.dataset.boxtoggle, kind = b.dataset.kind;
+    setBoxHidden(id, kind, !boxHidden(id, kind)); routeCard();
   });
   view.querySelectorAll("[data-restoreboxes]").forEach(b => b.onclick = () => {
-    setBoxesHidden(b.dataset.restoreboxes, false); routeCard();
+    setBoxHidden(b.dataset.restoreboxes, b.dataset.kind, false); routeCard();
   });
   view.querySelectorAll("[data-edititem]").forEach(el => el.onclick = () => {
     const id = el.dataset.edititem;
@@ -1508,9 +1519,10 @@ function outbound(){
       id, kind:v.kind, hidden:v.h ? 1 : 0, updated_at:v.u });
   });
   /* Riding the same wire channel as cardHidden above, distinguished by a
-     "boxes" kind and a suffixed id — card_hidden's id is a primary key
-     server-side, and an item can independently be both fully hidden and
-     have its boxes hidden, so the two must never share a row. */
+     "boxes" kind and a suffixed id ("itemId#kind!boxes") — card_hidden's id
+     is a primary key server-side, and a line can independently be fully
+     hidden, have any subset of its four boxes hidden, or both, so none of
+     these may ever share a row. */
   Object.entries(S.cardNoBoxes || {}).forEach(([id, v]) => {
     if(v.u > since) out.card_hidden.push({
       id: id + "!boxes", kind:"boxes", hidden:v.h ? 1 : 0, updated_at:v.u });
