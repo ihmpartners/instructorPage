@@ -1,6 +1,6 @@
 {
-    "name": "IMSOARING SPL Training App",
-    "short_name": "HTML App",
+    "name": "IMSOARING SPL Training Record",
+    "short_name": "IMSOARING SPL",
     "start_url": "index.html",
     "display": "standalone",
     "background_color": "#ffffff",
