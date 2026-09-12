@@ -2379,7 +2379,6 @@ function inbound(d){
     if(!f){ f = { id:r.id, u:0 }; st.flights.push(f); }
     if(r.updated_at > (f.u || 0)){
       f.d = r.flown_on; f.by = r.by; f.byId = r.updated_by; f.auto = r.auto ? 1 : 0; f.u = r.updated_at;
-      f.d = r.flown_on; f.by = r.by; f.byId = r.updated_by; f.auto = r.auto ? 1 : 0; f.u = r.updated_at;
       if(r.deleted) f.del = 1; else delete f.del;
       changed++;
     }
@@ -2464,7 +2463,6 @@ async function syncNow(quiet){
     if(typeof data.ai_enabled === "boolean") S.sync.aiEnabled = data.ai_enabled;
     if("release_version" in data) S.sync.releaseVersion = data.release_version;
     if(data.instructor_id) S.sync.id = data.instructor_id;
-    if(data.instructor_id) S.sync.id = data.instructor_id;
     save();
     const sent = body.students.length + body.marks.length +
                  body.attempts.length + body.videos.length;
@@ -2495,49 +2493,12 @@ async function linkDevice(url, token){
   if(!res.ok) throw new Error(d.error || ("HTTP " + res.status));
   S.sync.url = clean; S.sync.token = token;
   S.sync.id = d.id; S.sync.caa = d.caa_ref; S.sync.name = d.name; S.sync.canEdit = !!d.can_edit;
-  S.sync.id = d.id; S.sync.caa = d.caa_ref; S.sync.name = d.name; S.sync.canEdit = !!d.can_edit;
   S.sync.clubName = d.club_name || null;
   S.sync.aiEnabled = !!d.ai_enabled;
   if("release_version" in d) S.sync.releaseVersion = d.release_version;
   S.instructor = S.instructor || d.name;
   save();
   return d;
-}
-
-/* A device can hold a token from more than one club, the same way the same
-   real person can genuinely be issued one by each — visiting instructors,
-   or anyone who splits their time. Only one is ever "active" for actual
-   sync calls (S.sync itself never changes shape, so nothing else in this
-   file needs to know any of this exists); switching or adding another
-   just moves connections between S.sync and S.savedClubs. Whichever one
-   just became active gets re-verified with a fresh /v1/auth call rather
-   than trusting a stale snapshot, since permissions can change between
-   visits. */
-function stashCurrentConnection(){
-  if(!syncReady()) return;
-  S.savedClubs = (S.savedClubs || []).filter(c => !(c.url === S.sync.url && c.token === S.sync.token));
-  S.savedClubs.push({ url:S.sync.url, token:S.sync.token, clubName:S.sync.clubName, name:S.sync.name });
-}
-async function switchToSavedClub(idx){
-  const saved = (S.savedClubs || [])[idx];
-  if(!saved) return;
-  stashCurrentConnection();
-  S.savedClubs.splice(S.savedClubs.findIndex(c => c.url === saved.url && c.token === saved.token), 1);
-  const who = await linkDevice(saved.url, saved.token);
-  save();
-  await syncNow(true);
-  return who;
-}
-async function addAnotherClub(url, token){
-  stashCurrentConnection();
-  const who = await linkDevice(url, token);
-  save();
-  await syncNow(true);
-  return who;
-}
-function forgetSavedClub(idx){
-  (S.savedClubs || []).splice(idx, 1);
-  save();
 }
 
 /* A device can hold a token from more than one club, the same way the same
@@ -2842,39 +2803,10 @@ function routeSettings(){
       <div style="height:8px"></div>
       <button class="btn ghost" id="myactivity">My activity</button>
       <div style="height:8px"></div>
-      <button class="btn ghost" id="myactivity">My activity</button>
-      <div style="height:8px"></div>
       <button class="btn ghost" id="unlink">Unlink this device</button>
       <p class="small muted" style="margin-top:8px">Changes sync on their own a few
       seconds after you make them, and whenever the app regains signal. Everything
       keeps working with no connection.</p>
-
-      ${(S.savedClubs || []).length ? `
-        <p class="small muted" style="margin-top:16px">Other clubs this device has a
-        token for \u2014 visiting, or splitting time between clubs. Switching doesn't
-        touch your students; they're the same shared roster everywhere, only which
-        club's aircraft and checkouts you're working with changes.</p>
-        ${S.savedClubs.map((c,i) => `
-          <div class="block" style="margin:0 0 8px;display:flex;align-items:center;gap:10px;justify-content:space-between">
-            <div><b>${esc(c.name || "Instructor")}</b>
-              <p class="small muted" style="margin:2px 0 0">${esc(c.clubName || c.url)}</p></div>
-            <div style="display:flex;gap:6px;flex-shrink:0">
-              <button class="btn ghost sm" data-switchclub="${i}">Switch</button>
-              <button class="btn ghost sm" data-forgetclub="${i}" aria-label="Forget this club" style="color:var(--mag);border-color:var(--mag)">Forget</button>
-            </div>
-          </div>`).join("")}
-      ` : ""}
-      <p style="margin-top:16px"><button class="btn ghost" id="addclub">Add another club</button></p>
-      <div id="addclubform" hidden>
-        <span class="lbl">Server address</span>
-        <input type="text" id="acurl" placeholder="https://spl.otherclub.workers.dev"
-          autocapitalize="off" autocorrect="off">
-        <span class="lbl">Your token there</span>
-        <input type="text" id="actok" placeholder="1234567.XXXXXXXXXXXXXXXXXXXX"
-          autocapitalize="characters" autocorrect="off">
-        <div style="height:10px"></div>
-        <button class="btn" id="doaddclub">Add and switch to this club</button>
-      </div>
 
       ${(S.savedClubs || []).length ? `
         <p class="small muted" style="margin-top:16px">Other clubs this device has a
@@ -3002,45 +2934,6 @@ function routeSettings(){
     syncBtn.disabled = true; syncBtn.textContent = "Syncing\u2026";
     await syncNow(false);
     routeSettings();
-  };
-  const activityBtn = view.querySelector("#myactivity");
-  if(activityBtn) activityBtn.onclick = () => go("#/activity");
-  view.querySelectorAll("[data-switchclub]").forEach(b => b.onclick = async () => {
-    b.disabled = true; b.textContent = "Switching\u2026";
-    try {
-      const who = await switchToSavedClub(Number(b.dataset.switchclub));
-      toast(`Switched to ${who.club_name || who.name}`);
-      routeSettings();
-    } catch(e){
-      toast("Could not switch: " + e.message);
-      routeSettings();
-    }
-  });
-  view.querySelectorAll("[data-forgetclub]").forEach(b => b.onclick = () => {
-    if(!confirm("Forget this club? You'll need the token again to switch back.")) return;
-    forgetSavedClub(Number(b.dataset.forgetclub));
-    routeSettings();
-  });
-  const addClubBtn = view.querySelector("#addclub");
-  if(addClubBtn) addClubBtn.onclick = () => {
-    view.querySelector("#addclubform").hidden = false;
-    addClubBtn.hidden = true;
-  };
-  const doAddClubBtn = view.querySelector("#doaddclub");
-  if(doAddClubBtn) doAddClubBtn.onclick = async () => {
-    const url = view.querySelector("#acurl").value.trim();
-    const tok = view.querySelector("#actok").value.trim();
-    if(!/^https?:\/\//.test(url)) return toast("Server address must start with https://");
-    if(!tok.includes(".")) return toast("That does not look like a token");
-    doAddClubBtn.disabled = true; doAddClubBtn.textContent = "Adding\u2026";
-    try {
-      const who = await addAnotherClub(url, tok);
-      toast(`Switched to ${who.club_name || who.name}`);
-      routeSettings();
-    } catch(e){
-      toast("Could not add that club: " + e.message);
-      doAddClubBtn.disabled = false; doAddClubBtn.textContent = "Add and switch to this club";
-    }
   };
   const activityBtn = view.querySelector("#myactivity");
   if(activityBtn) activityBtn.onclick = () => go("#/activity");
@@ -3307,7 +3200,6 @@ function router(){
     a.removeAttribute("aria-current"));
   const key = parts[0] === "l" ? (LESSONS.some(l=>l.id===parts[1]) ? "lessons" : "ref")
             : parts[0] === "notes" ? "card" : parts[0] === "activity" ? "settings" : parts[0];
-            : parts[0] === "notes" ? "card" : parts[0] === "activity" ? "settings" : parts[0];
   const nav = document.querySelector(`nav.bottom a[data-nav="${key}"]`);
   if(nav) nav.setAttribute("aria-current","page");
 
@@ -3316,7 +3208,6 @@ function router(){
   else if(parts[0] === "ref")     routeRef();
   else if(parts[0] === "students")routeStudents();
   else if(parts[0] === "settings")routeSettings();
-  else if(parts[0] === "activity")routeActivity();
   else if(parts[0] === "activity")routeActivity();
   else if(parts[0] === "notes")   routeNotes();
   else if(parts[0] === "stopwatch")routeStopwatch();
